@@ -1,18 +1,13 @@
 <?php
-// config.php
-$host = "localhost";
-$db   = "td7_avions";      // <-- adapte si ton nom de base est différent
-$user = "postgres";    // <-- adapte
-$pass = "postgres";     // <-- adapte
-$port = "5432";
-
-$dsn = "pgsql:host=$host;port=$port;dbname=$db;options='--client_encoding=UTF8'";
+$host = 'localhost';
+$dbname = 'votre_base';
+$user = 'votre_utilisateur';
+$password = 'votre_mot_de_passe';
 
 try {
-    $pdo = new PDO($dsn, $user, $pass, [
-        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
+    $pdo = new PDO("pgsql:host=$host;dbname=$dbname", $user, $password);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (PDOException $e) {
-    die("Erreur connexion BDD : " . $e->getMessage());
+    die("Erreur de connexion : " . $e->getMessage());
 }
+?>
