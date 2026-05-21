@@ -1,0 +1,172 @@
+1. Formulation des questions
+Je suis parti sur la conception d'une application métier pour les agents de trafic aérien. 
+Les agents de trafic aérien sont responsables de la coordination opérationnelle des vols au sol, depuis la préparation de l’appareil jusqu’à l’autorisation de départ.
+Ils doivent s’assurer, en temps réel, que chaque vol a bien été contrôlé (checké),
+Dans ce contexte, cette application servira d'outil de renseignement de la procédure de vérification d'avant vol (ou le "checking vol") que l'agent de trafic doit faire avant chaque vol.
+La question centrale que l'application va répondre est : Quels sont les vols prêts au départ, ceux en attente ou en anomalie, et où se situent-ils spatialement au moment du contrôle ?
+
+2. Requêtes : 
+
+2.1. Création tables agent_trafic et check_vol :
+-- ==========================================================
+-- 1) Table des agents de trafic (pré-remplie)
+-- ==========================================================
+DROP TABLE IF EXISTS check_vol;
+DROP TABLE IF EXISTS agent_trafic;
+
+CREATE TABLE agent_trafic (
+  id        SERIAL PRIMARY KEY,
+  nom       VARCHAR(80) NOT NULL,
+  badge     VARCHAR(30) UNIQUE NOT NULL,
+  telephone VARCHAR(20)
+);
+
+INSERT INTO agent_trafic (nom, badge, telephone) VALUES
+('Amina Diallo',      'ATF-001', '+33 6 12 34 56 01'),
+('Yanis Benali',      'ATF-002', '+33 6 12 34 56 02'),
+('Clara Moreau',      'ATF-003', '+33 6 12 34 56 03'),
+('Moussa Traoré',     'ATF-004', '+33 6 12 34 56 04'),
+('Inès Lahcene',      'ATF-005', '+33 6 12 34 56 05'),
+('Thomas Nguyen',     'ATF-006', '+33 6 12 34 56 06'),
+('Sara El Mansouri',  'ATF-007', '+33 6 12 34 56 07'),
+('Lucas Pereira',     'ATF-008', '+33 6 12 34 56 08'),
+('Mariam Coulibaly',  'ATF-009', '+33 6 12 34 56 09'),
+('Hugo Bernard',      'ATF-010', '+33 6 12 34 56 10');
+
+-- ==========================================================
+-- 2) Table des checks de vols (remplie par formulaire)
+--    Points carto = aeroport de départ du vol
+-- ==========================================================
+CREATE TABLE check_vol (
+  id          SERIAL PRIMARY KEY,
+  idvol       INTEGER NOT NULL,
+  idagent     INTEGER NOT NULL,
+  date_check  TIMESTAMP NOT NULL DEFAULT NOW(),
+  statut      VARCHAR(15) NOT NULL,
+  commentaire TEXT,
+
+  CONSTRAINT fk_check_vol_vol
+    FOREIGN KEY (idvol) REFERENCES vol(id)
+    ON DELETE CASCADE,
+
+  CONSTRAINT fk_check_vol_agent
+    FOREIGN KEY (idagent) REFERENCES agent_trafic(id)
+    ON DELETE RESTRICT,
+
+  CONSTRAINT ck_check_vol_statut
+    CHECK (statut IN ('OK', 'KO', 'EN_ATTENTE'))
+);
+
+-- Index utiles (perf + filtre date/vol)
+CREATE INDEX idx_check_vol_idvol ON check_vol(idvol);
+CREATE INDEX idx_check_vol_date  ON check_vol(date_check);
+
+2.2. Requêtes PDO :
+2.2.a. Tableau formulaire ajout des checks par l'utilisateurs
+// 1) Charger les listes pour les <select>
+$vols = $pdo->query("
+  SELECT v.id, v.depart, v.arrivee, v.horaire
+  FROM vol v
+  ORDER BY v.horaire DESC
+")->fetchAll();
+
+$agents = $pdo->query("
+  SELECT id, nom, email
+  FROM agent_trafic
+  ORDER BY nom
+")->fetchAll();
+
+// 2) Traitement formulaire
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    $idvol = isset($_POST["idvol"]) ? (int)$_POST["idvol"] : 0;
+    $idagent = isset($_POST["idagent"]) ? (int)$_POST["idagent"] : 0;
+    $statut = isset($_POST["statut"]) ? trim($_POST["statut"]) : "";
+    $commentaire = isset($_POST["commentaire"]) ? trim($_POST["commentaire"]) : "";
+
+    $allowed = ["OK", "KO", "EN_ATTENTE"];
+
+    if ($idvol <= 0 || $idagent <= 0) {
+        $error = "Vol et agent sont obligatoires.";
+    } elseif (!in_array($statut, $allowed, true)) {
+        $error = "Statut invalide.";
+    } else {
+        try {
+            $sql = "INSERT INTO check_vol (idvol, idagent, statut, commentaire)
+                    VALUES (:idvol, :idagent, :statut, :commentaire)";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                ":idvol" => $idvol,
+                ":idagent" => $idagent,
+                ":statut" => $statut,
+                ":commentaire" => ($commentaire === "" ? null : $commentaire)
+            ]);
+
+            // PRG pattern : redirige après POST (évite double insertion au refresh)
+            header("Location: map.php?added=1");
+            exit;
+
+        } catch (PDOException $e) {
+            $error = "Erreur SQL : " . $e->getMessage();
+        }
+    }
+}
+
+
+2.2.b. Tableau de vue integrale des vols
+// Requête : vols + pilote + avion/modèle + essais + test + technicien
+$sql = "
+SELECT
+  v.id AS idvol,
+  v.depart,
+  v.arrivee,
+  v.horaire,
+
+  p.id AS idpilote,
+  p.nom AS pilote_nom,
+
+  av.matricule AS avion_matricule,
+  m.id AS modele_id,
+
+  e.id AS idessai,
+  e.dateessai,
+  e.note,
+
+  t.id AS idtest,
+  t.nom AS test_nom,
+  t.seuil AS test_seuil,
+
+  tech.id AS idtechnicien,
+  tech.nom AS technicien_nom
+
+FROM vol v
+LEFT JOIN pilote p     ON p.id = v.idpilote
+LEFT JOIN avion av     ON av.matricule = v.idavion
+LEFT JOIN modele m     ON m.id = av.idmodele
+
+-- essais liés à l'avion
+LEFT JOIN essai e      ON e.idavion = av.matricule
+LEFT JOIN test t       ON t.id = e.idtest
+LEFT JOIN technicien tech ON tech.id = e.idtechnicien
+
+ORDER BY v.id, e.dateessai DESC NULLS LAST;
+";
+
+$stmt = $pdo->prepare($sql);
+$stmt->execute();
+$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+4. Carte : 
+
+
+
+
+5. Commentaire : 
+
+Les requêtes ont été conçues pour répondre aux besoins opérationnels des agents de trafic aérien, en identifiant l’état le plus récent de chaque vol à partir des contrôles réalisés. 
+Le choix de récupérer uniquement le dernier check par vol permet d’éviter les doublons et de fournir une vision opérationnelle en temps réel. 
+Les jointures entre vols, agents de trafic et aéroports assurent la cohérence des informations et rendent possible leur spatialisation. 
+La représentation cartographique repose sur une localisation des vols à l’aéroport de départ, en lien direct avec la phase de contrôle au sol. 
+La représentation utilisée (vert, rouge, orange) traduit le statut opérationnel des vols. 
+Enfin, une vue tabulaire complémentaire permet de vérifier l’ensemble des informations techniques associées aux vols (pilotes, essais, techniciens).
+Les limites :  absence de gestion des droits utilisateurs, modélisation simplifiée des processus opérationnels réels. 
+Les améliorations possibles : authentification par rôle, prise en compte du suivi temporel complet des checks, visualisation plus avancée des trajets (liaison départ–arrivée), filtres temporels
